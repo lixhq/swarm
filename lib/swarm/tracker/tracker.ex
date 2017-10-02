@@ -185,7 +185,7 @@ defmodule Swarm.Tracker do
     clock = Clock.seed()
     ref = Process.monitor({__MODULE__, sync_node})
     GenStateMachine.cast({__MODULE__, sync_node}, {:sync, self(), clock})
-    {:next_state, :syncing, %{state | clock: clock, sync_node: sync_node, sync_ref: ref}}
+    {:next_state, :syncing, %{state | clock: clock, sync_node: sync_node, sync_ref: ref}, {:state_timeout, 20_000, sync_node}}
   end
   def cluster_wait(:cast, {:sync, from, rclock}, %TrackerState{nodes: [from_node]} = state) when node(from) == from_node do
     info "joining cluster.."
@@ -203,6 +203,10 @@ defmodule Swarm.Tracker do
     {:keep_state_and_data, :postpone}
   end
 
+  def syncing(:state_timeout, sync_node, state) do
+    GenStateMachine.cast(self(), {:sync_err, sync_node})
+    {:keep_state, new_state}
+  end
   def syncing(:info, {:nodeup, node, _}, %TrackerState{} = state) do
     new_state = case nodeup(state, node) do
                   {:ok, new_state} -> new_state
