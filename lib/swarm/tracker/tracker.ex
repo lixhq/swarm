@@ -187,7 +187,7 @@ defmodule Swarm.Tracker do
 
   def syncing(:state_timeout, sync_node, state) do
     GenStateMachine.cast(self(), {:sync_err, sync_node})
-    {:keep_state, new_state}
+    {:keep_state, state}
   end
   def syncing(:info, {:nodeup, node, _}, %TrackerState{} = state) do
     new_state = case nodeup(state, node) do
