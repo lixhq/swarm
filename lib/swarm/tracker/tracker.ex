@@ -188,7 +188,7 @@ defmodule Swarm.Tracker do
   def syncing(:state_timeout, sync_node, state) do
     node_swarm_pid = :rpc.call(sync_node, Process, :whereis, [Swarm.Tracker])
     GenStateMachine.cast(self(), {:sync_err, node_swarm_pid})
-    {:keep_state, state}
+    {:keep_state, state, {:state_timeout, 10_000, sync_node}}
   end
   def syncing(:info, {:nodeup, node, _}, %TrackerState{} = state) do
     new_state = case nodeup(state, node) do
