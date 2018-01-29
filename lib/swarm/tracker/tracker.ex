@@ -184,7 +184,7 @@ defmodule Swarm.Tracker do
     # Send sync request
     ref = Process.monitor({__MODULE__, sync_node})
     GenStateMachine.cast({__MODULE__, sync_node}, {:sync, self()})
-    {:next_state, :syncing, %{state | sync_node: sync_node, sync_ref: ref}}
+    {:next_state, :syncing, %{state | sync_node: sync_node, sync_ref: ref}, {:state_timeout, 10_000, sync_node}}
   end
   def cluster_wait(:cast, {:sync, from}, %TrackerState{nodes: [from_node]} = state) when node(from) == from_node do
     info "joining cluster.."
@@ -203,6 +203,11 @@ defmodule Swarm.Tracker do
     {:keep_state_and_data, :postpone}
   end
 
+  def syncing(:state_timeout, sync_node, state) do
+    node_swarm_pid = :rpc.call(sync_node, Process, :whereis, [Swarm.Tracker])
+    GenStateMachine.cast(self(), {:sync_err, node_swarm_pid})
+    {:keep_state, state, {:state_timeout, 10_000, sync_node}}
+  end
   def syncing(:info, {:nodeup, node, _}, %TrackerState{} = state) do
     new_state = case nodeup(state, node) do
                   {:ok, new_state} -> new_state
@@ -1178,12 +1183,14 @@ defmodule Swarm.Tracker do
 
   defp broadcast_event([], _clock, _event),  do: :ok
   defp broadcast_event(nodes, clock, event) do
-    case :rpc.sbcast(nodes, __MODULE__, {:event, self(), clock, event}) do
-      {_good, []}  -> :ok
-      {_good, bad_nodes} ->
-        warn "broadcast of event (#{inspect event}) was not recevied by #{inspect bad_nodes}"
-        :ok
-    end
+    :abcast = :rpc.abcast(nodes, __MODULE__, {:event, self(), clock, event})
+    :ok
+    # case :rpc.sbcast(nodes, __MODULE__, {:event, self(), clock, event}) do
+    #   {_good, []}  -> :ok
+    #   {_good, bad_nodes} ->
+    #     warn "broadcast of event (#{inspect event}) was not recevied by #{inspect bad_nodes}"
+    #     :ok
+    # end
   end
 
   # Add a registration and reply to the caller with the result, then return the state transition
