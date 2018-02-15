@@ -697,7 +697,7 @@ defmodule Swarm.Tracker do
     debug "topology change (#{type} for #{remote_node})"
     current_node = state.self
     new_clock = Registry.reduce(state.clock, fn
-      entry(name: name, pid: pid, meta: meta) = obj, lclock when node(pid) == current_node ->
+      entry(name: name, pid: pid, meta: meta = %{mfa: _mfa}) = obj, lclock when node(pid) == current_node ->
         case Strategy.key_to_node(state.strategy, name) do
           :undefined ->
             # No node available to host process, it must be stopped
@@ -739,7 +739,7 @@ defmodule Swarm.Tracker do
                 lclock
             end
         end
-      entry(name: name, pid: pid, meta: meta) = obj, lclock when is_map(meta) ->
+      entry(name: name, pid: pid, meta: meta = %{mfa: _mfa}) = obj, lclock ->
         cond do
           Enum.member?(state.nodes, node(pid)) ->
             # the parent node is still up
