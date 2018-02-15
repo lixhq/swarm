@@ -12,6 +12,7 @@ defmodule Swarm.Tracker do
   @retry_interval 1_000
   @retry_max_attempts 10
   @default_anti_entropy_interval 5 * 60_000
+  @sync_max_wait 30_000
 
   import Swarm.Entry
   require Swarm.Registry
@@ -184,7 +185,7 @@ defmodule Swarm.Tracker do
     # Send sync request
     ref = Process.monitor({__MODULE__, sync_node})
     GenStateMachine.cast({__MODULE__, sync_node}, {:sync, self()})
-    {:next_state, :syncing, %{state | sync_node: sync_node, sync_ref: ref}, {:state_timeout, 10_000, sync_node}}
+    {:next_state, :syncing, %{state | sync_node: sync_node, sync_ref: ref}, {:state_timeout, @sync_max_wait, sync_node}}
   end
   def cluster_wait(:cast, {:sync, from}, %TrackerState{nodes: [from_node]} = state) when node(from) == from_node do
     info "joining cluster.."
@@ -206,7 +207,7 @@ defmodule Swarm.Tracker do
   def syncing(:state_timeout, sync_node, state) do
     node_swarm_pid = :rpc.call(sync_node, Process, :whereis, [Swarm.Tracker])
     GenStateMachine.cast(self(), {:sync_err, node_swarm_pid})
-    {:keep_state, state, {:state_timeout, 10_000, sync_node}}
+    {:keep_state, state, {:state_timeout, @sync_max_wait, sync_node}}
   end
   def syncing(:info, {:nodeup, node, _}, %TrackerState{} = state) do
     new_state = case nodeup(state, node) do
@@ -708,9 +709,6 @@ defmodule Swarm.Tracker do
           ^current_node ->
             # This process is correct
             lclock
-          _ when type == :nodedown ->
-            {:ok, new_state} = remove_registration(obj, %{state | clock: lclock})
-            new_state.clock
           other_node ->
             debug "#{inspect pid} belongs on #{other_node}"
             # This process needs to be moved to the new node
@@ -1066,7 +1064,11 @@ defmodule Swarm.Tracker do
         debug "lost connection to #{inspect name} (#{inspect pid}) on #{node(pid)}, node is down"
         nodedown = node(pid)
         # Redistribute processes as necessary
-        handle_topology_change({:nodedown, nodedown}, state)
+        new_state = case nodedown(state, node) do
+                      {:ok, new_state} -> new_state
+                      {:ok, new_state, _next_state} -> new_state
+                    end
+        handle_topology_change({:nodedown, nodedown}, new_state)
       entry(pid: ^pid) = obj ->
         debug "lost connection to #{inspect pid}, but not restartable, removing registration.."
         {:ok, new_state} = remove_registration(obj, state)
