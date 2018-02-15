@@ -708,6 +708,9 @@ defmodule Swarm.Tracker do
           ^current_node ->
             # This process is correct
             lclock
+          _ when type == :nodedown ->
+            {:ok, new_state} = remove_registration(obj, %{state | clock: lclock})
+            new_state.clock
           other_node ->
             debug "#{inspect pid} belongs on #{other_node}"
             # This process needs to be moved to the new node
