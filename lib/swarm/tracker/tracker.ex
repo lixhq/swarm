@@ -9,9 +9,10 @@ defmodule Swarm.Tracker do
   use GenStateMachine, callback_mode: :state_functions
 
   @sync_nodes_timeout 5_000
-  @retry_interval 1_000
+  @retry_interval 2_000
   @retry_max_attempts 10
   @default_anti_entropy_interval 5 * 60_000
+  @waiting_sync_timeout 30_000
 
   import Swarm.Entry
   require Swarm.Registry
@@ -213,7 +214,8 @@ defmodule Swarm.Tracker do
     clock = Clock.seed()
     ref = Process.monitor({__MODULE__, sync_node})
     GenStateMachine.cast({__MODULE__, sync_node}, {:sync, self(), clock})
-    {:next_state, :syncing, %{state | clock: clock, sync_node: sync_node, sync_ref: ref}}
+    new_state = %{state | clock: clock, sync_node: sync_node, sync_ref: ref}
+    {:next_state, :syncing, new_state, {:state_timeout, waiting_sync_timeout(), {:sync_timeout, new_state}}}
   end
 
   def cluster_wait(:cast, {:sync, from, rclock}, %TrackerState{nodes: [from_node]} = state)
@@ -242,6 +244,36 @@ defmodule Swarm.Tracker do
     {:keep_state_and_data, :postpone}
   end
 
+  def syncing(:state_timeout, {:sync_timeout, sync_state}, state = %{nodes: nodes, sync_node: sync_node}) do
+    cond do
+      length(nodes) == 1 and sync_state == sync_state->
+        GenStateMachine.cast({__MODULE__, sync_node}, {:sync, self(), state.clock})
+        {:keep_state, state, {:state_timeout, waiting_sync_timeout(), {:sync_timeout, state}}}
+      length(nodes) > 1 and sync_state == sync_state ->
+        Process.demonitor(state.sync_ref, [:flush])
+        warn "sync did not happend within expected time limit, choosing a new node to sync with"
+        # we need to choose a different node to sync with, if possible, and try again
+        new_sync_node = Enum.random(nodes -- [sync_node])
+        ref = Process.monitor({__MODULE__, new_sync_node})
+        GenStateMachine.cast({__MODULE__, new_sync_node}, {:sync, self(), state.clock})
+        new_state = %{state | sync_node: new_sync_node, sync_ref: ref}
+        {:keep_state, new_state, {:state_timeout, waiting_sync_timeout(), {:sync_timeout, new_state}}}
+      :else ->
+        {:keep_state_and_data, {:state_timeout, waiting_sync_timeout(), {:sync_timeout, state}}}
+    end
+    # if sync_state == state do
+      # warn "Syncing with #{state.sync_node} failed after waiting #{waiting_sync_timeout()}ms without any updates. Sending sync_err to self to cancel sync"
+    #   node_swarm_pid = :rpc.call(state.sync_node, Process, :whereis, [Swarm.Tracker])
+    #   GenStateMachine.cast(self(), {:sync_err, node_swarm_pid})
+    # end
+    # {:keep_state, state, {:state_timeout, waiting_sync_timeout(), {:sync_timeout, state}}}
+    #another strategy, lets fire it again
+    # if sync_state == state do
+    #   info "resending sync to #{state.sync_node} after waiting  #{waiting_sync_timeout()}ms for :sync_recv"
+    #   GenStateMachine.cast({__MODULE__, state.sync_node}, {:sync, self(), state.clock})
+    # end
+    # {:keep_state_and_data, {:state_timeout, waiting_sync_timeout(), {:sync_timeout, state}}}
+  end
   def syncing(:info, {:nodeup, node, _}, %TrackerState{} = state) do
     new_state =
       case nodeup(state, node) do
@@ -314,7 +346,7 @@ defmodule Swarm.Tracker do
             sync_ref: ref
         }
 
-        {:keep_state, new_state}
+        {:keep_state, new_state, {:state_timeout, waiting_sync_timeout(), {:sync_timeout, new_state}}}
     end
   end
 
@@ -332,19 +364,20 @@ defmodule Swarm.Tracker do
   def syncing(
         :cast,
         {:sync_recv, from, sync_clock, registry},
-        %TrackerState{sync_node: sync_node} = state
-      )
-      when node(from) == sync_node do
-    info("received registry from #{sync_node}, merging..")
-    new_state = sync_registry(from, sync_clock, registry, state)
-    # let remote node know we've got the registry
-    GenStateMachine.cast(from, {:sync_ack, self(), new_state.clock, get_registry_snapshot()})
-    info("local synchronization with #{sync_node} complete!")
-    resolve_pending_sync_requests(new_state)
+        %TrackerState{sync_node: sync_node} = state)
+    when node(from) == sync_node do
+      info "received registry from #{sync_node}, merging.."
+      #if we're trying to sync with another node while it is trying to sync with us
+      #we need to clear the pending_sync_reqs of this
+      new_state =
+        sync_registry(from, sync_clock, registry, state)
+        |> Map.update!(:pending_sync_reqs, &Enum.reject(&1, fn(pid) -> from == pid end))
+      # let remote node know we've got the registry
+      GenStateMachine.cast(from, {:sync_ack, self(), new_state.clock, Registry.snapshot()})
+      info "local synchronization with #{sync_node} complete!"
+      resolve_pending_sync_requests(new_state)
   end
-
-  def syncing(:cast, {:sync_err, from}, %TrackerState{nodes: nodes, sync_node: sync_node} = state)
-      when node(from) == sync_node do
+  def syncing(:cast, {:sync_err, from}, %TrackerState{nodes: nodes, sync_node: sync_node} = state) when node(from) == sync_node do
     Process.demonitor(state.sync_ref, [:flush])
 
     cond do
@@ -357,8 +390,8 @@ defmodule Swarm.Tracker do
         new_sync_node = Enum.random(nodes)
         ref = Process.monitor({__MODULE__, new_sync_node})
         GenStateMachine.cast({__MODULE__, new_sync_node}, {:sync, self(), state.clock})
-        {:keep_state, %{state | sync_node: new_sync_node, sync_ref: ref}}
-
+        new_state = %{state | sync_node: new_sync_node, sync_ref: ref}
+        {:keep_state, new_state, {:state_timeout, waiting_sync_timeout(), {:sync_timeout, new_state}}}
       # Something went wrong during sync, but there are no other nodes to sync with,
       # not even the original sync node (which probably implies it shutdown or crashed),
       # so we're the sync node now
@@ -426,10 +459,16 @@ defmodule Swarm.Tracker do
       case Registry.get_by_name(rname) do
         :undefined ->
           # missing local registration
-          debug("local tracker is missing #{inspect(rname)}, adding to registry")
-          ref = Process.monitor(rpid)
-          lclock = Clock.join(sync_clock, rclock)
-          Registry.new!(entry(name: rname, pid: rpid, ref: ref, meta: rmeta, clock: lclock))
+          debug "local tracker is missing #{inspect rname}, adding to registry"
+          #lets check if the remote node is connected and ignore it if its dead. The issue here is that
+          #the monitor call takes up alot of time when the node is gone
+          if node(rpid) in alive_nodes do
+            ref = Process.monitor(rpid)
+            lclock = Clock.join(sync_clock, rclock)
+            Registry.new!(entry(name: rname, pid: rpid, ref: ref, meta: rmeta, clock: lclock))
+          else
+            warn "Ignoring registration of #{inspect rname} at #{inspect rpid} on a dead node #{node(rpid)}"
+          end
 
         entry(pid: ^rpid, meta: lmeta, clock: lclock) ->
           case Clock.compare(lclock, rclock) do
@@ -588,8 +627,15 @@ defmodule Swarm.Tracker do
       when sync_node == node(from) do
     info("received sync acknowledgement from #{node(from)}, syncing with remote registry")
     new_state = sync_registry(from, sync_clock, registry, state)
+    |> Map.update!(:pending_sync_reqs, &Enum.reject(&1, fn(pid) -> from == pid end))
     info("local synchronization with #{node(from)} complete!")
     resolve_pending_sync_requests(new_state)
+  def awaiting_sync_ack(:cast, {:sync_nack, from}, %TrackerState{sync_node: sync_node} = state)
+    when sync_node == node(from) do
+    warn "received sync_nack from #{node(from)}, ignoring this"
+    state
+    |> Map.update!(:pending_sync_reqs, &Enum.reject(&1, fn(pid) -> from == pid end))
+    |> resolve_pending_sync_requests()
   end
 
   def awaiting_sync_ack(
@@ -731,7 +777,7 @@ defmodule Swarm.Tracker do
     new_state = %{state | sync_node: sync_node, sync_ref: ref}
     interval = Application.get_env(:swarm, :anti_entropy_interval, @default_anti_entropy_interval)
     Process.send_after(self(), :anti_entropy, interval)
-    {:next_state, :syncing, new_state}
+    {:next_state, :syncing, new_state, {:state_timeout, waiting_sync_timeout(), {:sync_timeout, new_state}}}
   end
 
   # This message is sent as a broadcast message for replication
@@ -1206,7 +1252,11 @@ defmodule Swarm.Tracker do
        %{state | clock: lclock, sync_node: sync_node, sync_ref: ref}}
     end
   end
-
+  defp handle_cast({:sync_recv, from, _, _}, _) do
+     warn "unexpected received :sync_recv from #{node(from)} sending back :sync_nack"
+     GenStateMachine.cast(from, {:sync_nack, self()})
+     :keep_state_and_data
+  end
   defp handle_cast(msg, _state) do
     warn("unrecognized cast: #{inspect(msg)}")
     :keep_state_and_data
@@ -1643,7 +1693,7 @@ defmodule Swarm.Tracker do
             Process.send_after(
               self(),
               {:ensure_swarm_started_on_remote_node, node, attempts + 1},
-              @retry_interval
+              min(@retry_interval * (@retry_max_attempts - attempts), 10_000)
             )
 
             {:ok, state}
@@ -1697,5 +1747,10 @@ defmodule Swarm.Tracker do
     Enum.map(snapshot, fn entry(name: name, pid: pid, ref: ref, meta: meta, clock: clock) ->
       entry(name: name, pid: pid, ref: ref, meta: meta, clock: Clock.peek(clock))
     end)
+
+  end
+
+  defp waiting_sync_timeout() do
+    @waiting_sync_timeout + :rand.uniform(15_000)
   end
 end

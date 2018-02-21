@@ -26,7 +26,13 @@ defmodule Swarm.Registry do
         Tracker.whereis(name)
 
       entry(pid: pid) when is_pid(pid) ->
-        pid
+        # seems like we can have stale regs for dead nodes, so lets check if node is there
+        if Node.self() == node(pid) or node(pid) in Node.list() do
+          pid
+        else
+          remove_by_pid(pid)
+          Tracker.whereis(name)
+        end
     end
   end
 
