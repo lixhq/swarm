@@ -189,7 +189,7 @@ defmodule Swarm.Tracker do
     clock = Clock.seed()
     ref = Process.monitor({__MODULE__, sync_node})
     GenStateMachine.cast({__MODULE__, sync_node}, {:sync, self(), clock})
-    {:next_state, :syncing, %{state | clock: clock, sync_node: sync_node, sync_ref: ref}, {:state_timeout, @waiting_sync_timeout, :sync_timeout}}
+    {:next_state, :syncing, %{state | clock: clock, sync_node: sync_node, sync_ref: ref}, {:event_timeout, @waiting_sync_timeout, :sync_timeout}}
   end
   def cluster_wait(:cast, {:sync, from, rclock}, %TrackerState{nodes: [from_node]} = state) when node(from) == from_node do
     info "joining cluster.."
@@ -212,10 +212,10 @@ defmodule Swarm.Tracker do
     {:keep_state_and_data, :postpone}
   end
 
-  def syncing(:state_timeout, :sync_timeout, state) do
+  def syncing(:timeout, :sync_timeout, state) do
     node_swarm_pid = :rpc.call(state.sync_node, Process, :whereis, [Swarm.Tracker])
     GenStateMachine.cast(self(), {:sync_err, node_swarm_pid})
-    {:keep_state, state, {:state_timeout, @waiting_sync_timeout, :sync_timeout}}
+    {:keep_state, state}
   end
   def syncing(:info, {:nodeup, node, _}, %TrackerState{} = state) do
     new_state = case nodeup(state, node) do
@@ -295,7 +295,7 @@ defmodule Swarm.Tracker do
         new_sync_node = Enum.random(nodes)
         ref = Process.monitor({__MODULE__, new_sync_node})
         GenStateMachine.cast({__MODULE__, new_sync_node}, {:sync, self(), state.clock})
-        {:keep_state, %{state | sync_node: new_sync_node, sync_ref: ref}}
+        {:keep_state, %{state | sync_node: new_sync_node, sync_ref: ref}, {:event_timeout, @waiting_sync_timeout, :sync_timeout}}
       # Something went wrong during sync, but there are no other nodes to sync with,
       # not even the original sync node (which probably implies it shutdown or crashed),
       # so we're the sync node now
@@ -342,7 +342,7 @@ defmodule Swarm.Tracker do
     end
   end
   def syncing(_event_type, _event_data, _state) do
-    {:keep_state_and_data, :postpone}
+    {:keep_state_and_data, [{:event_timeout, @waiting_sync_timeout, :sync_timeout}, :postpone]}
   end
 
   defp sync_registry(from, sync_clock, registry, %TrackerState{} = state) when is_pid(from) do
