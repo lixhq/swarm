@@ -1062,7 +1062,7 @@ defmodule Swarm.Tracker do
       entry(name: name, pid: ^pid, meta: %{mfa: _mfa}) ->
         debug "lost connection to #{inspect name} (#{inspect pid}) on #{node(pid)}, node is down"
         nodedown = node(pid)
-        new_state = case nodedown(state, node) do
+        new_state = case nodedown(state, nodedown) do
                       {:ok, new_state} -> new_state
                       {:ok, new_state, _next_state} -> new_state
                     end
