@@ -9,7 +9,7 @@ defmodule Swarm.Tracker do
   use GenStateMachine, callback_mode: :state_functions
 
   @sync_nodes_timeout 5_000
-  @retry_interval 1_000
+  @retry_interval 2_000
   @retry_max_attempts 10
   @default_anti_entropy_interval 5 * 60_000
   @waiting_sync_timeout 20_000
@@ -189,7 +189,7 @@ defmodule Swarm.Tracker do
     clock = Clock.seed()
     ref = Process.monitor({__MODULE__, sync_node})
     GenStateMachine.cast({__MODULE__, sync_node}, {:sync, self(), clock})
-    {:next_state, :syncing, %{state | clock: clock, sync_node: sync_node, sync_ref: ref}, {:state_timeout, @waiting_sync_timeout, sync_node}}
+    {:next_state, :syncing, %{state | clock: clock, sync_node: sync_node, sync_ref: ref}, {:state_timeout, @waiting_sync_timeout, :sync_timeout}}
   end
   def cluster_wait(:cast, {:sync, from, rclock}, %TrackerState{nodes: [from_node]} = state) when node(from) == from_node do
     info "joining cluster.."
@@ -212,10 +212,10 @@ defmodule Swarm.Tracker do
     {:keep_state_and_data, :postpone}
   end
 
-  def syncing(:state_timeout, sync_node, state) do
-    node_swarm_pid = :rpc.call(sync_node, Process, :whereis, [Swarm.Tracker])
+  def syncing(:state_timeout, :sync_timeout, state) do
+    node_swarm_pid = :rpc.call(state.sync_node, Process, :whereis, [Swarm.Tracker])
     GenStateMachine.cast(self(), {:sync_err, node_swarm_pid})
-    {:keep_state, state, {:state_timeout, @waiting_sync_timeout, sync_node}}
+    {:keep_state, state, {:state_timeout, @waiting_sync_timeout, :sync_timeout}}
   end
   def syncing(:info, {:nodeup, node, _}, %TrackerState{} = state) do
     new_state = case nodeup(state, node) do
@@ -1358,7 +1358,7 @@ defmodule Swarm.Tracker do
             {:ok, new_state, {:topology_change, {:nodeup, node}}}
           nil ->
             debug "nodeup for #{node} was ignored because swarm not started yet, will retry in #{@retry_interval}ms.."
-            Process.send_after(self(), {:ensure_swarm_started_on_remote_node, node, attempts + 1}, @retry_interval)
+            Process.send_after(self(), {:ensure_swarm_started_on_remote_node, node, attempts + 1}, min(@retry_interval * (@retry_max_attempts - attempts), 10_000))
             {:ok, state}
         end
       other ->
