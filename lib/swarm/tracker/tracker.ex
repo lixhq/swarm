@@ -9,7 +9,7 @@ defmodule Swarm.Tracker do
   use GenStateMachine, callback_mode: :state_functions
 
   @sync_nodes_timeout 5_000
-  @retry_interval 1_000
+  @retry_interval 2_000
   @retry_max_attempts 10
   @default_anti_entropy_interval 5 * 60_000
 
@@ -1368,7 +1368,7 @@ defmodule Swarm.Tracker do
             {:ok, new_state, {:topology_change, {:nodeup, node}}}
           nil ->
             debug "nodeup for #{node} was ignored because swarm not started yet, will retry in #{@retry_interval}ms.."
-            Process.send_after(self(), {:ensure_swarm_started_on_remote_node, node, attempts + 1}, @retry_interval)
+            Process.send_after(self(), {:ensure_swarm_started_on_remote_node, node, attempts + 1}, min(@retry_interval * (@retry_max_attempts - attempts), 10_000))
             {:ok, state}
         end
       other ->
