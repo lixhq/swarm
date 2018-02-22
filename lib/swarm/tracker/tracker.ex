@@ -222,6 +222,7 @@ defmodule Swarm.Tracker do
     # {:keep_state, state, {:state_timeout, @waiting_sync_timeout, {:sync_timeout, state}}}
     #another strategy, lets fire it again
     if sync_state == state do
+      info "resending sync to #{state.sync_node} after waiting  #{@waiting_sync_timeout}ms for :sync_recv"
       GenStateMachine.cast({__MODULE__, state.sync_node}, {:sync, self(), state.clock})
     end
     {:keep_state_and_data, {:state_timeout, @waiting_sync_timeout, {:sync_timeout, state}}}
@@ -290,7 +291,7 @@ defmodule Swarm.Tracker do
       #we need to clear the pending_sync_reqs of this
       new_state =
         sync_registry(from, sync_clock, registry, state)
-        |> Map.update!(:pending_sync_reqs, &List.delete(&1, from))
+        |> Map.update!(:pending_sync_reqs, &Enum.reject(&1, fn(pid) -> from == pid end))
       # let remote node know we've got the registry
       GenStateMachine.cast(from, {:sync_ack, self(), new_state.clock, Registry.snapshot()})
       info "local synchronization with #{sync_node} complete!"
