@@ -12,7 +12,7 @@ defmodule Swarm.Tracker do
   @retry_interval 2_000
   @retry_max_attempts 10
   @default_anti_entropy_interval 5 * 60_000
-  @waiting_sync_timeout 20_000
+  @waiting_sync_timeout 60_000
 
   import Swarm.Entry
   require Swarm.Registry
@@ -214,12 +214,13 @@ defmodule Swarm.Tracker do
   end
 
   def syncing(:state_timeout, {:sync_timeout, sync_state}, state) do
-    if sync_state == state do
-      warn "Syncing with #{state.sync_node} failed after waiting #{@waiting_sync_timeout}ms without any updates. Sending sync_err to self to cancel sync"
-      node_swarm_pid = :rpc.call(state.sync_node, Process, :whereis, [Swarm.Tracker])
-      GenStateMachine.cast(self(), {:sync_err, node_swarm_pid})
-    end
-    {:keep_state, state, {:state_timeout, @waiting_sync_timeout, {:sync_timeout, state}}}
+    # if sync_state == state do
+      # warn "Syncing with #{state.sync_node} failed after waiting #{@waiting_sync_timeout}ms without any updates. Sending sync_err to self to cancel sync"
+    #   node_swarm_pid = :rpc.call(state.sync_node, Process, :whereis, [Swarm.Tracker])
+    #   GenStateMachine.cast(self(), {:sync_err, node_swarm_pid})
+    # end
+      # {:keep_state, state, {:state_timeout, @waiting_sync_timeout, {:sync_timeout, state}}}
+      :keep_state_and_data
   end
   def syncing(:info, {:nodeup, node, _}, %TrackerState{} = state) do
     new_state = case nodeup(state, node) do
