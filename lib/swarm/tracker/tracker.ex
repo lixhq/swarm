@@ -506,7 +506,9 @@ defmodule Swarm.Tracker do
   def awaiting_sync_ack(:cast, {:sync_ack, from, sync_clock, registry}, %TrackerState{sync_node: sync_node} = state)
     when sync_node == node(from) do
       info "received sync acknowledgement from #{node(from)}, syncing with remote registry"
-      new_state = sync_registry(from, sync_clock, registry, state)
+      new_state =
+        sync_registry(from, sync_clock, registry, state)
+        |> Map.update!(:pending_sync_reqs, &Enum.reject(&1, fn(pid) -> from == pid end))
       info "local synchronization with #{node(from)} complete!"
       resolve_pending_sync_requests(new_state)
   end
