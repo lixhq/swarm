@@ -213,7 +213,23 @@ defmodule Swarm.Tracker do
     {:keep_state_and_data, :postpone}
   end
 
-  def syncing(:state_timeout, {:sync_timeout, sync_state}, state) do
+  def syncing(:state_timeout, {:sync_timeout, sync_state}, state = %{nodes: nodes, sync_node: sync_node}) do
+    cond do
+      length(nodes) == 1 and sync_state == sync_state->
+        GenStateMachine.cast({__MODULE__, sync_node}, {:sync, self(), state.clock})
+        {:keep_state, state, {:state_timeout, @waiting_sync_timeout, {:sync_timeout, state}}}
+      length(nodes) > 1 and sync_state == sync_state ->
+        Process.demonitor(state.sync_ref, [:flush])
+        warn "sync did not happend within expected time limit, choosing a new node to sync with"
+        # we need to choose a different node to sync with, if possible, and try again
+        new_sync_node = Enum.random(nodes -- [sync_node])
+        ref = Process.monitor({__MODULE__, new_sync_node})
+        GenStateMachine.cast({__MODULE__, new_sync_node}, {:sync, self(), state.clock})
+        new_state = %{state | sync_node: new_sync_node, sync_ref: ref}
+        {:keep_state, new_state, {:state_timeout, @waiting_sync_timeout, {:sync_timeout, new_state}}}
+      :else ->
+        {:keep_state_and_data, {:state_timeout, @waiting_sync_timeout, {:sync_timeout, state}}}
+    end
     # if sync_state == state do
       # warn "Syncing with #{state.sync_node} failed after waiting #{@waiting_sync_timeout}ms without any updates. Sending sync_err to self to cancel sync"
     #   node_swarm_pid = :rpc.call(state.sync_node, Process, :whereis, [Swarm.Tracker])
@@ -221,11 +237,11 @@ defmodule Swarm.Tracker do
     # end
     # {:keep_state, state, {:state_timeout, @waiting_sync_timeout, {:sync_timeout, state}}}
     #another strategy, lets fire it again
-    if sync_state == state do
-      info "resending sync to #{state.sync_node} after waiting  #{@waiting_sync_timeout}ms for :sync_recv"
-      GenStateMachine.cast({__MODULE__, state.sync_node}, {:sync, self(), state.clock})
-    end
-    {:keep_state_and_data, {:state_timeout, @waiting_sync_timeout, {:sync_timeout, state}}}
+    # if sync_state == state do
+    #   info "resending sync to #{state.sync_node} after waiting  #{@waiting_sync_timeout}ms for :sync_recv"
+    #   GenStateMachine.cast({__MODULE__, state.sync_node}, {:sync, self(), state.clock})
+    # end
+    # {:keep_state_and_data, {:state_timeout, @waiting_sync_timeout, {:sync_timeout, state}}}
   end
   def syncing(:info, {:nodeup, node, _}, %TrackerState{} = state) do
     new_state = case nodeup(state, node) do
@@ -273,7 +289,7 @@ defmodule Swarm.Tracker do
                               strategy: Strategy.remove_node(strategy, node),
                               sync_node: new_sync_node,
                               sync_ref: ref}
-        {:keep_state, new_state}
+        {:keep_state, new_state, {:state_timeout, @waiting_sync_timeout, {:sync_timeout, new_state}}}
     end
   end
   def syncing(:info, {:nodedown, node, _}, %TrackerState{} = state) do
@@ -503,6 +519,13 @@ defmodule Swarm.Tracker do
     end
   end
 
+  def awaiting_sync_ack(:cast, {:sync_nack, from}, %TrackerState{sync_node: sync_node} = state)
+    when sync_node == node(from) do
+    warn "received sync_nack from #{node(from)}, ignoring this"
+    state
+    |> Map.update!(:pending_sync_reqs, &Enum.reject(&1, fn(pid) -> from == pid end))
+    |> resolve_pending_sync_requests()
+  end
   def awaiting_sync_ack(:cast, {:sync_ack, from, sync_clock, registry}, %TrackerState{sync_node: sync_node} = state)
     when sync_node == node(from) do
       info "received sync acknowledgement from #{node(from)}, syncing with remote registry"
@@ -719,7 +742,7 @@ defmodule Swarm.Tracker do
             debug "#{inspect pid} belongs on #{other_node}"
             # This process needs to be moved to the new node
             try do
-              case GenServer.call(pid, {:swarm, :begin_handoff}) do
+              case GenServer.call(pid, {:swarm, :begin_handoff}, 50) do
                 :ignore ->
                   debug "#{inspect name} has requested to be ignored"
                   lclock
@@ -1041,6 +1064,11 @@ defmodule Swarm.Tracker do
       GenStateMachine.cast(from, {:sync_recv, self(), rclock, Registry.snapshot()})
       {:next_state, :awaiting_sync_ack, %{state | clock: lclock, sync_node: sync_node, sync_ref: ref}}
     end
+  end
+  defp handle_cast({:sync_recv, from, _, _}, _) do
+     warn "unexpected received :sync_recv from #{node(from)} sending back :sync_nack"
+     GenStateMachine.cast(from, {:sync_nack, self()})
+     :keep_state_and_data
   end
   defp handle_cast(msg, _state) do
     warn "unrecognized cast: #{inspect msg}"
