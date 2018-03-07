@@ -393,7 +393,7 @@ defmodule Swarm.Tracker do
             Registry.new!(entry(name: rname, pid: rpid, ref: ref, meta: rmeta, clock: rclock))
             %{state | clock: Clock.event(clock)}
           else
-            warn "Ignoring registration of #{rname} at #{inspect rpid} on a dead node #{node(rpid)}"
+            warn "Ignoring registration of #{inspect rname} at #{inspect rpid} on a dead node #{node(rpid)}"
             state
           end
         entry(pid: ^rpid, meta: ^rmeta, clock: ^rclock) ->
