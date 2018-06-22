@@ -190,7 +190,7 @@ defmodule Swarm.Tracker do
     ref = Process.monitor({__MODULE__, sync_node})
     GenStateMachine.cast({__MODULE__, sync_node}, {:sync, self(), clock})
     new_state = %{state | clock: clock, sync_node: sync_node, sync_ref: ref}
-    {:next_state, :syncing, new_state, {:state_timeout, @waiting_sync_timeout, {:sync_timeout, new_state}}}
+    {:next_state, :syncing, new_state, {:state_timeout, waiting_sync_timeout(), {:sync_timeout, new_state}}}
   end
   def cluster_wait(:cast, {:sync, from, rclock}, %TrackerState{nodes: [from_node]} = state) when node(from) == from_node do
     info "joining cluster.."
@@ -217,7 +217,7 @@ defmodule Swarm.Tracker do
     cond do
       length(nodes) == 1 and sync_state == sync_state->
         GenStateMachine.cast({__MODULE__, sync_node}, {:sync, self(), state.clock})
-        {:keep_state, state, {:state_timeout, @waiting_sync_timeout, {:sync_timeout, state}}}
+        {:keep_state, state, {:state_timeout, waiting_sync_timeout(), {:sync_timeout, state}}}
       length(nodes) > 1 and sync_state == sync_state ->
         Process.demonitor(state.sync_ref, [:flush])
         warn "sync did not happend within expected time limit, choosing a new node to sync with"
@@ -226,22 +226,22 @@ defmodule Swarm.Tracker do
         ref = Process.monitor({__MODULE__, new_sync_node})
         GenStateMachine.cast({__MODULE__, new_sync_node}, {:sync, self(), state.clock})
         new_state = %{state | sync_node: new_sync_node, sync_ref: ref}
-        {:keep_state, new_state, {:state_timeout, @waiting_sync_timeout, {:sync_timeout, new_state}}}
+        {:keep_state, new_state, {:state_timeout, waiting_sync_timeout(), {:sync_timeout, new_state}}}
       :else ->
-        {:keep_state_and_data, {:state_timeout, @waiting_sync_timeout, {:sync_timeout, state}}}
+        {:keep_state_and_data, {:state_timeout, waiting_sync_timeout(), {:sync_timeout, state}}}
     end
     # if sync_state == state do
-      # warn "Syncing with #{state.sync_node} failed after waiting #{@waiting_sync_timeout}ms without any updates. Sending sync_err to self to cancel sync"
+      # warn "Syncing with #{state.sync_node} failed after waiting #{waiting_sync_timeout()}ms without any updates. Sending sync_err to self to cancel sync"
     #   node_swarm_pid = :rpc.call(state.sync_node, Process, :whereis, [Swarm.Tracker])
     #   GenStateMachine.cast(self(), {:sync_err, node_swarm_pid})
     # end
-    # {:keep_state, state, {:state_timeout, @waiting_sync_timeout, {:sync_timeout, state}}}
+    # {:keep_state, state, {:state_timeout, waiting_sync_timeout(), {:sync_timeout, state}}}
     #another strategy, lets fire it again
     # if sync_state == state do
-    #   info "resending sync to #{state.sync_node} after waiting  #{@waiting_sync_timeout}ms for :sync_recv"
+    #   info "resending sync to #{state.sync_node} after waiting  #{waiting_sync_timeout()}ms for :sync_recv"
     #   GenStateMachine.cast({__MODULE__, state.sync_node}, {:sync, self(), state.clock})
     # end
-    # {:keep_state_and_data, {:state_timeout, @waiting_sync_timeout, {:sync_timeout, state}}}
+    # {:keep_state_and_data, {:state_timeout, waiting_sync_timeout(), {:sync_timeout, state}}}
   end
   def syncing(:info, {:nodeup, node, _}, %TrackerState{} = state) do
     new_state = case nodeup(state, node) do
@@ -289,7 +289,7 @@ defmodule Swarm.Tracker do
                               strategy: Strategy.remove_node(strategy, node),
                               sync_node: new_sync_node,
                               sync_ref: ref}
-        {:keep_state, new_state, {:state_timeout, @waiting_sync_timeout, {:sync_timeout, new_state}}}
+        {:keep_state, new_state, {:state_timeout, waiting_sync_timeout(), {:sync_timeout, new_state}}}
     end
   end
   def syncing(:info, {:nodedown, node, _}, %TrackerState{} = state) do
@@ -326,7 +326,7 @@ defmodule Swarm.Tracker do
         ref = Process.monitor({__MODULE__, new_sync_node})
         GenStateMachine.cast({__MODULE__, new_sync_node}, {:sync, self(), state.clock})
         new_state = %{state | sync_node: new_sync_node, sync_ref: ref}
-        {:keep_state, new_state, {:state_timeout, @waiting_sync_timeout, {:sync_timeout, new_state}}}
+        {:keep_state, new_state, {:state_timeout, waiting_sync_timeout(), {:sync_timeout, new_state}}}
       # Something went wrong during sync, but there are no other nodes to sync with,
       # not even the original sync node (which probably implies it shutdown or crashed),
       # so we're the sync node now
@@ -654,7 +654,7 @@ defmodule Swarm.Tracker do
     new_state = %{state | sync_node: sync_node, sync_ref: ref}
     interval = Application.get_env(:swarm, :anti_entropy_interval, @default_anti_entropy_interval)
     Process.send_after(self(), :anti_entropy, interval)
-    {:next_state, :syncing, new_state, {:state_timeout, @waiting_sync_timeout, {:sync_timeout, new_state}}}
+    {:next_state, :syncing, new_state, {:state_timeout, waiting_sync_timeout(), {:sync_timeout, new_state}}}
   end
 
 
@@ -1437,5 +1437,9 @@ defmodule Swarm.Tracker do
       :else ->
         {:ok, state}
     end
+  end
+
+  defp waiting_sync_timeout() do
+    @waiting_sync_timeout + :rand.uniform(15_000)
   end
 end
