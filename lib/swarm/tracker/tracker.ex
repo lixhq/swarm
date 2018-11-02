@@ -454,6 +454,7 @@ defmodule Swarm.Tracker do
 
   defp sync_registry(from, sync_clock, registry, %TrackerState{} = state) when is_pid(from) do
     sync_node = node(from)
+    alive_nodes = [node() | Node.list()]
     # map over the registry and check that all local entries are correct
     Enum.each(registry, fn entry(name: rname, pid: rpid, meta: rmeta, clock: rclock) = rreg ->
       case Registry.get_by_name(rname) do
@@ -630,6 +631,7 @@ defmodule Swarm.Tracker do
     |> Map.update!(:pending_sync_reqs, &Enum.reject(&1, fn(pid) -> from == pid end))
     info("local synchronization with #{node(from)} complete!")
     resolve_pending_sync_requests(new_state)
+  end
   def awaiting_sync_ack(:cast, {:sync_nack, from}, %TrackerState{sync_node: sync_node} = state)
     when sync_node == node(from) do
     warn "received sync_nack from #{node(from)}, ignoring this"
