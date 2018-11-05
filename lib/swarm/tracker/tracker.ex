@@ -454,7 +454,7 @@ defmodule Swarm.Tracker do
 
   defp sync_registry(from, sync_clock, registry, %TrackerState{} = state) when is_pid(from) do
     sync_node = node(from)
-    alive_nodes = [node() | Node.list()]
+    alive_nodes = Node.list()
     # map over the registry and check that all local entries are correct
     Enum.each(registry, fn entry(name: rname, pid: rpid, meta: rmeta, clock: rclock) = rreg ->
       case Registry.get_by_name(rname) do
