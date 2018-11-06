@@ -891,7 +891,7 @@ defmodule Swarm.Tracker do
               debug("#{inspect(pid)} belongs on #{other_node}")
               # This process needs to be moved to the new node
               try do
-                case GenServer.call(pid, {:swarm, :begin_handoff}) do
+                case GenServer.call(pid, {:swarm, :begin_handoff}, 50) do
                   :ignore ->
                     debug("#{inspect(name)} has requested to be ignored")
                     lclock
