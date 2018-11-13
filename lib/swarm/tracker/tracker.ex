@@ -454,8 +454,9 @@ defmodule Swarm.Tracker do
 
   defp sync_registry(from, sync_clock, registry, %TrackerState{} = state) when is_pid(from) do
     sync_node = node(from)
-    alive_nodes = [Node.self()| Node.list()]
     # map over the registry and check that all local entries are correct
+    {t, _} =
+    :timer.tc(fn ->
     Enum.each(registry, fn entry(name: rname, pid: rpid, meta: rmeta, clock: rclock) = rreg ->
       case Registry.get_by_name(rname) do
         :undefined ->
@@ -463,7 +464,7 @@ defmodule Swarm.Tracker do
           debug "local tracker is missing #{inspect rname}, adding to registry"
           #lets check if the remote node is connected and ignore it if its dead. The issue here is that
           #the monitor call takes up alot of time when the node is gone
-          if node(rpid) in alive_nodes do
+          if node(rpid) in [Node.self()| Node.list()] do
             ref = Process.monitor(rpid)
             lclock = Clock.join(sync_clock, rclock)
             Registry.new!(entry(name: rname, pid: rpid, ref: ref, meta: rmeta, clock: lclock))
@@ -570,7 +571,9 @@ defmodule Swarm.Tracker do
           end
       end
     end)
+    end)
 
+    info("Syncing took #{t}us")
     %{state | clock: sync_clock}
   end
 
