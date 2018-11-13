@@ -373,7 +373,7 @@ defmodule Swarm.Tracker do
         sync_registry(from, sync_clock, registry, state)
         |> Map.update!(:pending_sync_reqs, &Enum.reject(&1, fn(pid) -> from == pid end))
       # let remote node know we've got the registry
-      GenStateMachine.cast(from, {:sync_ack, self(), new_state.clock, Registry.snapshot()})
+      GenStateMachine.cast(from, {:sync_ack, self(), new_state.clock, get_registry_snapshot()})
       info "local synchronization with #{sync_node} complete!"
       resolve_pending_sync_requests(new_state)
   end
@@ -454,7 +454,7 @@ defmodule Swarm.Tracker do
 
   defp sync_registry(from, sync_clock, registry, %TrackerState{} = state) when is_pid(from) do
     sync_node = node(from)
-    alive_nodes = Node.list()
+    alive_nodes = [Node.self()| Node.list()]
     # map over the registry and check that all local entries are correct
     Enum.each(registry, fn entry(name: rname, pid: rpid, meta: rmeta, clock: rclock) = rreg ->
       case Registry.get_by_name(rname) do
