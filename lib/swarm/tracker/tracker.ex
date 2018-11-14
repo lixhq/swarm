@@ -367,15 +367,18 @@ defmodule Swarm.Tracker do
         %TrackerState{sync_node: sync_node} = state)
     when node(from) == sync_node do
       info "received registry from #{sync_node}, merging.."
-      #if we're trying to sync with another node while it is trying to sync with us
-      #we need to clear the pending_sync_reqs of this
-      new_state =
-        sync_registry(from, sync_clock, registry, state)
-        |> Map.update!(:pending_sync_reqs, &Enum.reject(&1, fn(pid) -> from == pid end))
+      new_state = sync_registry(from, sync_clock, registry, state)
       # let remote node know we've got the registry
       GenStateMachine.cast(from, {:sync_ack, self(), new_state.clock, get_registry_snapshot()})
       info "local synchronization with #{sync_node} complete!"
-      resolve_pending_sync_requests(new_state)
+
+      # if the same node somehow sent multiple sync requests we clear them from the pending_sync_reqs
+      # since this is now resolved after the sync_ack. Not doing this would result in a faulty sync
+      # since its not in awaiting_sync_ack state anymore
+
+      new_state
+      |> Map.update!(:pending_sync_reqs, &Enum.reject(&1, fn(pid) -> from == pid end))
+      |> resolve_pending_sync_requests()
   end
   def syncing(:cast, {:sync_err, from}, %TrackerState{nodes: nodes, sync_node: sync_node} = state) when node(from) == sync_node do
     Process.demonitor(state.sync_ref, [:flush])
@@ -455,22 +458,14 @@ defmodule Swarm.Tracker do
   defp sync_registry(from, sync_clock, registry, %TrackerState{} = state) when is_pid(from) do
     sync_node = node(from)
     # map over the registry and check that all local entries are correct
-    {t, _} =
+    {us, _} =
     :timer.tc(fn ->
     Enum.each(registry, fn entry(name: rname, pid: rpid, meta: rmeta, clock: rclock) = rreg ->
       case Registry.get_by_name(rname) do
         :undefined ->
           # missing local registration
           debug "local tracker is missing #{inspect rname}, adding to registry"
-          #lets check if the remote node is connected and ignore it if its dead. The issue here is that
-          #the monitor call takes up alot of time when the node is gone
-          if node(rpid) in [Node.self()| Node.list()] do
-            ref = Process.monitor(rpid)
-            lclock = Clock.join(sync_clock, rclock)
-            Registry.new!(entry(name: rname, pid: rpid, ref: ref, meta: rmeta, clock: lclock))
-          else
-            warn "Ignoring registration of #{inspect rname} at #{inspect rpid} on a dead node #{node(rpid)}"
-          end
+          register_new!(rname, rpid, sync_clock, rclock, rmeta)
 
         entry(pid: ^rpid, meta: lmeta, clock: lclock) ->
           case Clock.compare(lclock, rclock) do
@@ -573,7 +568,7 @@ defmodule Swarm.Tracker do
     end)
     end)
 
-    info("Syncing took #{t}us")
+    info("Syncing took #{us}us")
     %{state | clock: sync_clock}
   end
 
@@ -979,6 +974,25 @@ defmodule Swarm.Tracker do
     {:keep_state, %{state | clock: new_clock}}
   end
 
+  #helper to register a new name to the local registry and avoid trying to monitor on a dead node
+  defp register_new!(name, pid, clock, rclock, meta) when node(pid) == node() do
+    ref = Process.monitor(pid)
+    lclock = Clock.join(clock, rclock)
+    Registry.new!(entry(name: name, pid: pid, ref: ref, meta: meta, clock: lclock))
+  end
+
+  defp register_new!(name, pid, clock, rclock, meta) do
+    # lets check if the remote node is connected and ignore it if its dead. The issue here is that
+    # the monitor call takes up alot of time when the node is gone and this can make the tracker unresponsive
+    if node(pid) in Node.list() do
+      ref = Process.monitor(pid)
+      lclock = Clock.join(clock, rclock)
+      Registry.new!(entry(name: name, pid: pid, ref: ref, meta: meta, clock: lclock))
+    else
+      warn "Ignoring registration of #{inspect name} at #{inspect pid} on a dead node #{node(pid)}"
+    end
+  end
+
   # This is the callback for tracker events which are being replicated from other nodes in the cluster
   defp handle_replica_event(_from, {:track, name, pid, meta}, rclock, %TrackerState{clock: clock}) do
     debug("replicating registration for #{inspect(name)} (#{inspect(pid)}) locally")
@@ -1038,14 +1052,15 @@ defmodule Swarm.Tracker do
         end
 
       :undefined ->
-        ref = Process.monitor(pid)
-        lclock = Clock.join(clock, rclock)
-        Registry.new!(entry(name: name, pid: pid, ref: ref, meta: meta, clock: lclock))
+        #TODO:
+        #investigate if instead of ignoring dead nodes we could selective receive and
+        #throw non relevant messages from the dead node instead?
+        register_new!(name, pid, clock, rclock, meta)
         :keep_state_and_data
     end
   end
 
-  defp handle_replica_event(_from, {:untrack, pid}, rclock, state) do
+  defp handle_replica_event(_from, {:untrack, pid}, rclock, _state) do
     debug("replica event: untrack #{inspect(pid)}")
 
     case Registry.get_by_pid(pid) do
