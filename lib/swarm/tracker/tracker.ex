@@ -12,7 +12,7 @@ defmodule Swarm.Tracker do
   @retry_interval 2_000
   @retry_max_attempts 10
   @default_anti_entropy_interval 5 * 60_000
-  @min_sync_timeout 30_000
+  @min_sync_timeout 40_000
 
   import Swarm.Entry
   require Swarm.Registry
@@ -254,7 +254,7 @@ defmodule Swarm.Tracker do
         warn "sync with #{sync_node} did not happend within expected time limit, choosing #{new_sync_node} to sync with"
         ref = Process.monitor({__MODULE__, new_sync_node})
         #lets send sync_nack to old to avoid its waiting in awaiting_sync_ack and send :sync to the chosen one
-        GenStateMachine.cast({__MODULE__, sync_node}, {:sync_nack, self(), state.clock})
+        GenStateMachine.cast({__MODULE__, sync_node}, {:sync_nack, self()})
         GenStateMachine.cast({__MODULE__, new_sync_node}, {:sync, self(), state.clock})
         new_state = %{state | sync_node: new_sync_node, sync_ref: ref}
         {:keep_state, new_state, {:state_timeout, waiting_sync_timeout(:sync_timeout), {:sync_timeout, new_state}}}
@@ -632,7 +632,7 @@ defmodule Swarm.Tracker do
   end
   def awaiting_sync_ack(:cast, {:sync_nack, from}, %TrackerState{sync_node: sync_node} = state)
     when sync_node == node(from) do
-    warn "received sync_nack from #{node(from)}, ignoring this"
+    warn "received sync_nack from #{node(from)}, backing out of awaiting_sync_ack"
     state
     |> Map.update!(:pending_sync_reqs, &Enum.reject(&1, fn(pid) -> from == pid end))
     |> resolve_pending_sync_requests()
