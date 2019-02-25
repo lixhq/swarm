@@ -196,9 +196,7 @@ defmodule Swarm.Tracker do
   def cluster_wait(:info, :cluster_join, %TrackerState{nodes: []} = state) do
     info("joining cluster..")
     info("no connected nodes, proceeding without sync")
-    interval = Application.get_env(:swarm, :anti_entropy_interval, @default_anti_entropy_interval)
-    Process.send_after(self(), :anti_entropy, interval)
-    {:next_state, :tracking, %{state | clock: Clock.seed()}}
+    {:next_state, :tracking, %{state | clock: Clock.seed()}, {:state_timeout, anti_entropy_interval(), :anti_entropy}}
   end
 
   def cluster_wait(:info, :cluster_join, %TrackerState{nodes: nodes} = state) do
@@ -264,7 +262,7 @@ defmodule Swarm.Tracker do
       [] ->
         info("no other available nodes, cancelling sync")
         new_state = %{state | sync_node: nil, sync_ref: nil}
-        {:next_state, :tracking, new_state}
+        {:next_state, :tracking, new_state, {:state_timeout, anti_entropy_interval(), :anti_entropy}}
 
       new_nodes ->
         new_sync_node = Enum.random(new_nodes)
@@ -298,7 +296,7 @@ defmodule Swarm.Tracker do
             sync_ref: nil
         }
 
-        {:next_state, :tracking, new_state}
+        {:next_state, :tracking, new_state, {:state_timeout, anti_entropy_interval(), :anti_entropy}}
 
       new_nodes ->
         new_sync_node = Enum.random(new_nodes)
@@ -368,7 +366,7 @@ defmodule Swarm.Tracker do
           "a problem occurred during sync, but no other available sync targets, becoming seed node"
         )
 
-        {:next_state, :tracking, %{state | pending_sync_reqs: [], sync_node: nil, sync_ref: nil}}
+        {:next_state, :tracking, %{state | pending_sync_reqs: [], sync_node: nil, sync_ref: nil}, {:state_timeout, anti_entropy_interval(), :anti_entropy}}
     end
   end
 
@@ -545,7 +543,7 @@ defmodule Swarm.Tracker do
       ref -> Process.demonitor(ref, [:flush])
     end
 
-    {:next_state, :tracking, %{state | sync_node: nil, sync_ref: nil}}
+    {:next_state, :tracking, %{state | sync_node: nil, sync_ref: nil}, {:state_timeout, anti_entropy_interval(), :anti_entropy}}
   end
 
   defp resolve_pending_sync_requests(
@@ -690,7 +688,7 @@ defmodule Swarm.Tracker do
     |> handle_node_status()
   end
 
-  def tracking(:info, :anti_entropy, state) do
+  def tracking(event_type, :anti_entropy, state) when event_type in [:info, :state_timeout] do
     anti_entropy(state)
   end
 
@@ -731,9 +729,7 @@ defmodule Swarm.Tracker do
   # after joining the cluster and initial syncrhonization. This way if replication
   # events fail for some reason, we can control the drift in registry state
   def anti_entropy(%TrackerState{nodes: []}) do
-    interval = Application.get_env(:swarm, :anti_entropy_interval, @default_anti_entropy_interval)
-    Process.send_after(self(), :anti_entropy, interval)
-    :keep_state_and_data
+    {:keep_state_and_data, {:state_timeout, anti_entropy_interval(), :anti_entropy}}
   end
 
   def anti_entropy(%TrackerState{nodes: nodes} = state) do
@@ -742,8 +738,6 @@ defmodule Swarm.Tracker do
     ref = Process.monitor({__MODULE__, sync_node})
     GenStateMachine.cast({__MODULE__, sync_node}, {:sync, self(), state.clock})
     new_state = %{state | sync_node: sync_node, sync_ref: ref}
-    interval = Application.get_env(:swarm, :anti_entropy_interval, @default_anti_entropy_interval)
-    Process.send_after(self(), :anti_entropy, interval)
     {:next_state, :syncing, new_state}
   end
 
@@ -1710,4 +1704,9 @@ defmodule Swarm.Tracker do
       entry(name: name, pid: pid, ref: ref, meta: meta, clock: Clock.peek(clock))
     end)
   end
+
+  defp anti_entropy_interval() do
+    Application.get_env(:swarm, :anti_entropy_interval, @default_anti_entropy_interval)
+  end
+
 end
