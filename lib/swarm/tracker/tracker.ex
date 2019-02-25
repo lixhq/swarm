@@ -1646,16 +1646,18 @@ defmodule Swarm.Tracker do
             {:ok, new_state, {:topology_change, {:nodeup, node}}}
 
           nil ->
+            retry_interval = min(@retry_interval * (attempts + 1), 10_000)
+
             debug(
               "nodeup for #{node} was ignored because swarm not started yet, will retry in #{
-                @retry_interval
+                retry_interval
               }ms.."
             )
 
             Process.send_after(
               self(),
               {:ensure_swarm_started_on_remote_node, node, attempts + 1},
-              @retry_interval
+              retry_interval
             )
 
             {:ok, state}
