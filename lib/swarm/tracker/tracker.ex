@@ -688,7 +688,7 @@ defmodule Swarm.Tracker do
     |> handle_node_status()
   end
 
-  def tracking(event_type, :anti_entropy, state) when [:info, :state_timeout] do
+  def tracking(event_type, :anti_entropy, state) when event_type in [:info, :state_timeout] do
     anti_entropy(state)
   end
 
