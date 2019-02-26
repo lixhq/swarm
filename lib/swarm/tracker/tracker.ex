@@ -196,8 +196,6 @@ defmodule Swarm.Tracker do
   def cluster_wait(:info, :cluster_join, %TrackerState{nodes: []} = state) do
     info("joining cluster..")
     info("no connected nodes, proceeding without sync")
-    interval = Application.get_env(:swarm, :anti_entropy_interval, @default_anti_entropy_interval)
-    Process.send_after(self(), :anti_entropy, interval)
     {:next_state, :tracking, %{state | clock: Clock.seed()}, {:state_timeout, anti_entropy_interval(), :anti_entropy}}
   end
 
@@ -731,7 +729,7 @@ defmodule Swarm.Tracker do
   # after joining the cluster and initial syncrhonization. This way if replication
   # events fail for some reason, we can control the drift in registry state
   def anti_entropy(%TrackerState{nodes: []}) do
-    :keep_state_and_data
+    {:keep_state_and_data, {:state_timeout, anti_entropy_interval(), :anti_entropy}}
   end
 
   def anti_entropy(%TrackerState{nodes: nodes} = state) do
