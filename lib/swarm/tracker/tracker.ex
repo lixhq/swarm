@@ -106,12 +106,12 @@ defmodule Swarm.Tracker do
 
   ## Process Internals / Internal API
 
-  defmacrop debug(_msg) do
-    # {current_state, _arity} = __CALLER__.function
+  defmacrop debug(msg) do
+    {current_state, _arity} = __CALLER__.function
 
-    # quote do
-    #   Swarm.Logger.debug("[tracker:#{unquote(current_state)}] #{unquote(msg)}")
-    # end
+    quote do
+      Swarm.Logger.debug("[tracker:#{unquote(current_state)}] #{unquote(msg)}")
+    end
   end
 
   defmacrop info(msg) do
