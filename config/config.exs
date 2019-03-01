@@ -25,5 +25,4 @@ if System.get_env("SWARM_DEBUG") == "true" do
   config :logger, level: :debug
 end
 
-config :porcelain,
-  goon_warn_if_missing: false
+config :porcelain, goon_warn_if_missing: false

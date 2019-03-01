@@ -54,8 +54,7 @@ defmodule Swarm.Tracker do
   @doc """
   Authoritatively looks up the pid associated with a given name.
   """
-  def whereis(name),
-    do: GenStateMachine.call(__MODULE__, {:whereis, name}, :infinity)
+  def whereis(name), do: GenStateMachine.call(__MODULE__, {:whereis, name}, :infinity)
 
   @doc """
   Hand off all the processes running on the given worker to the remaining nodes in the cluster.
@@ -197,7 +196,9 @@ defmodule Swarm.Tracker do
   def cluster_wait(:info, :cluster_join, %TrackerState{nodes: []} = state) do
     info("joining cluster..")
     info("no connected nodes, proceeding without sync")
-    {:next_state, :tracking, %{state | clock: Clock.seed()}, {:state_timeout, anti_entropy_interval(), :anti_entropy}}
+
+    {:next_state, :tracking, %{state | clock: Clock.seed()},
+     {:state_timeout, anti_entropy_interval(), :anti_entropy}}
   end
 
   def cluster_wait(:info, :cluster_join, %TrackerState{nodes: nodes} = state) do
@@ -221,11 +222,17 @@ defmodule Swarm.Tracker do
     info("syncing with #{sync_node}")
     ref = Process.monitor({__MODULE__, sync_node})
     {lclock, rclock} = Clock.fork(rclock)
-    debug("forking clock: #{inspect state.clock}, lclock: #{inspect lclock}, rclock: #{inspect rclock}")
+
+    debug(
+      "forking clock: #{inspect(state.clock)}, lclock: #{inspect(lclock)}, rclock: #{
+        inspect(rclock)
+      }"
+    )
+
     GenStateMachine.cast(from, {:sync_recv, self(), rclock, get_registry_snapshot()})
 
     {:next_state, :awaiting_sync_ack,
-    %{state | clock: lclock, sync_node: sync_node, sync_ref: ref}}
+     %{state | clock: lclock, sync_node: sync_node, sync_ref: ref}}
   end
 
   def cluster_wait(:cast, {:sync, from, _rclock}, %TrackerState{} = state) do
@@ -263,7 +270,9 @@ defmodule Swarm.Tracker do
       [] ->
         info("no other available nodes, cancelling sync")
         new_state = %{state | sync_node: nil, sync_ref: nil}
-        {:next_state, :tracking, new_state, {:state_timeout, anti_entropy_interval(), :anti_entropy}}
+
+        {:next_state, :tracking, new_state,
+         {:state_timeout, anti_entropy_interval(), :anti_entropy}}
 
       new_nodes ->
         new_sync_node = Enum.random(new_nodes)
@@ -297,7 +306,8 @@ defmodule Swarm.Tracker do
             sync_ref: nil
         }
 
-        {:next_state, :tracking, new_state, {:state_timeout, anti_entropy_interval(), :anti_entropy}}
+        {:next_state, :tracking, new_state,
+         {:state_timeout, anti_entropy_interval(), :anti_entropy}}
 
       new_nodes ->
         new_sync_node = Enum.random(new_nodes)
@@ -367,7 +377,8 @@ defmodule Swarm.Tracker do
           "a problem occurred during sync, but no other available sync targets, becoming seed node"
         )
 
-        {:next_state, :tracking, %{state | pending_sync_reqs: [], sync_node: nil, sync_ref: nil}, {:state_timeout, anti_entropy_interval(), :anti_entropy}}
+        {:next_state, :tracking, %{state | pending_sync_reqs: [], sync_node: nil, sync_ref: nil},
+         {:state_timeout, anti_entropy_interval(), :anti_entropy}}
     end
   end
 
@@ -387,7 +398,13 @@ defmodule Swarm.Tracker do
         # The local clock dominates the remote clock, so the local node will begin the sync
         info("syncing to #{sync_node} based on tracker clock")
         {lclock, rclock} = Clock.fork(state.clock)
-        debug("forking clock when local: #{inspect state.clock}, lclock: #{inspect lclock}, rclock: #{inspect rclock}")
+
+        debug(
+          "forking clock when local: #{inspect(state.clock)}, lclock: #{inspect(lclock)}, rclock: #{
+            inspect(rclock)
+          }"
+        )
+
         GenStateMachine.cast(from, {:sync_recv, self(), rclock, get_registry_snapshot()})
         {:next_state, :awaiting_sync_ack, %{state | clock: lclock}}
 
@@ -400,7 +417,13 @@ defmodule Swarm.Tracker do
         # The local node begins the sync
         info("syncing to #{sync_node} based on node precedence")
         {lclock, rclock} = Clock.fork(state.clock)
-        debug("forking clock when concurrent: #{inspect state.clock}, lclock: #{inspect lclock}, rclock: #{inspect rclock}")
+
+        debug(
+          "forking clock when concurrent: #{inspect(state.clock)}, lclock: #{inspect(lclock)}, rclock: #{
+            inspect(rclock)
+          }"
+        )
+
         GenStateMachine.cast(from, {:sync_recv, self(), rclock, get_registry_snapshot()})
         {:next_state, :awaiting_sync_ack, %{state | clock: lclock}}
     end
@@ -424,114 +447,122 @@ defmodule Swarm.Tracker do
   defp sync_registry(from, _sync_clock, registry, %TrackerState{} = state) when is_pid(from) do
     sync_node = node(from)
     # map over the registry and check that all local entries are correct
-    Enum.each(registry, fn entry(name: rname, pid: rpid, meta: rmeta, clock: rclock) = rreg ->
-      case Registry.get_by_name(rname) do
-        :undefined ->
-          # missing local registration
-          debug("local tracker is missing #{inspect(rname)}, adding to registry")
-          ref = Process.monitor(rpid)
-          lclock = Clock.join(state.clock, rclock)
-          Registry.new!(entry(name: rname, pid: rpid, ref: ref, meta: rmeta, clock: lclock))
+    {us, _} =
+      :timer.tc(fn ->
+        Enum.each(registry, fn entry(name: rname, pid: rpid, meta: rmeta, clock: rclock) = rreg ->
+          case Registry.get_by_name(rname) do
+            :undefined ->
+              # missing local registration
+              debug("local tracker is missing #{inspect(rname)}, adding to registry")
+              ref = Process.monitor(rpid)
+              lclock = Clock.join(state.clock, rclock)
+              Registry.new!(entry(name: rname, pid: rpid, ref: ref, meta: rmeta, clock: lclock))
 
-        entry(pid: ^rpid, meta: lmeta, clock: lclock) ->
-          case Clock.compare(lclock, rclock) do
-            :lt ->
-              # the remote clock dominates, take remote data
-              lclock = Clock.join(lclock, rclock)
-              Registry.update(rname, meta: rmeta, clock: lclock)
+            entry(pid: ^rpid, meta: lmeta, clock: lclock) ->
+              case Clock.compare(lclock, rclock) do
+                :lt ->
+                  # the remote clock dominates, take remote data
+                  lclock = Clock.join(lclock, rclock)
+                  Registry.update(rname, meta: rmeta, clock: lclock)
 
-              debug(
-                "sync metadata for #{inspect(rpid)} (#{inspect(rmeta)}) is causally dominated by remote, updated registry..."
-              )
-
-            :gt ->
-              # the local clock dominates, keep local data
-              debug(
-                "sync metadata for #{inspect(rpid)} (#{inspect(rmeta)}) is causally dominated by local, ignoring..."
-              )
-
-              :ok
-
-            :eq ->
-              # the clocks are the same, no-op
-              debug(
-                "sync metadata for #{inspect(rpid)} (#{inspect(rmeta)}) has equal clocks, ignoring..."
-              )
-
-              :ok
-
-            :concurrent ->
-              warn("local and remote metadata for #{inspect(rname)} was concurrently modified")
-              new_meta = Map.merge(lmeta, rmeta)
-
-              # we're going to join and bump our local clock though and re-broadcast the update to ensure we converge
-              lclock = Clock.join(lclock, rclock)
-              lclock = Clock.event(lclock)
-              Registry.update(rname, meta: new_meta, clock: lclock)
-              broadcast_event(state.nodes, lclock, {:update_meta, new_meta, rpid})
-          end
-
-        entry(pid: lpid, clock: lclock) = lreg ->
-          # there are two different processes for the same name, we need to resolve
-          case Clock.compare(lclock, rclock) do
-            :lt ->
-              # the remote registration dominates
-              resolve_incorrect_local_reg(sync_node, lreg, rreg, state)
-
-            :gt ->
-              # local registration dominates
-              debug("remote view of #{inspect(rname)} is outdated, resolving..")
-              resolve_incorrect_remote_reg(sync_node, lreg, rreg, state)
-
-            _ ->
-              # the entry clocks conflict, determine which one is correct based on
-              # current topology and resolve the conflict
-              rpid_node = node(rpid)
-              lpid_node = node(lpid)
-
-              case Strategy.key_to_node(state.strategy, rname) do
-                ^rpid_node when lpid_node != rpid_node ->
                   debug(
-                    "remote and local view of #{inspect(rname)} conflict, but remote is correct, resolving.."
+                    "sync metadata for #{inspect(rpid)} (#{inspect(rmeta)}) is causally dominated by remote, updated registry..."
                   )
 
+                :gt ->
+                  # the local clock dominates, keep local data
+                  debug(
+                    "sync metadata for #{inspect(rpid)} (#{inspect(rmeta)}) is causally dominated by local, ignoring..."
+                  )
+
+                  :ok
+
+                :eq ->
+                  # the clocks are the same, no-op
+                  debug(
+                    "sync metadata for #{inspect(rpid)} (#{inspect(rmeta)}) has equal clocks, ignoring..."
+                  )
+
+                  :ok
+
+                :concurrent ->
+                  warn(
+                    "local and remote metadata for #{inspect(rname)} was concurrently modified"
+                  )
+
+                  new_meta = Map.merge(lmeta, rmeta)
+
+                  # we're going to join and bump our local clock though and re-broadcast the update to ensure we converge
+                  lclock = Clock.join(lclock, rclock)
+                  lclock = Clock.event(lclock)
+                  Registry.update(rname, meta: new_meta, clock: lclock)
+                  broadcast_event(state.nodes, lclock, {:update_meta, new_meta, rpid})
+              end
+
+            entry(pid: lpid, clock: lclock) = lreg ->
+              # there are two different processes for the same name, we need to resolve
+              case Clock.compare(lclock, rclock) do
+                :lt ->
+                  # the remote registration dominates
                   resolve_incorrect_local_reg(sync_node, lreg, rreg, state)
 
-                ^lpid_node when lpid_node != rpid_node ->
-                  debug(
-                    "remote and local view of #{inspect(rname)} conflict, but local is correct, resolving.."
-                  )
-
+                :gt ->
+                  # local registration dominates
+                  debug("remote view of #{inspect(rname)} is outdated, resolving..")
                   resolve_incorrect_remote_reg(sync_node, lreg, rreg, state)
 
                 _ ->
-                  cond do
-                    lpid_node == rpid_node and lpid > rpid ->
+                  # the entry clocks conflict, determine which one is correct based on
+                  # current topology and resolve the conflict
+                  rpid_node = node(rpid)
+                  lpid_node = node(lpid)
+
+                  case Strategy.key_to_node(state.strategy, rname) do
+                    ^rpid_node when lpid_node != rpid_node ->
                       debug(
-                        "remote and local view of #{inspect(rname)} conflict, but local is more recent, resolving.."
+                        "remote and local view of #{inspect(rname)} conflict, but remote is correct, resolving.."
+                      )
+
+                      resolve_incorrect_local_reg(sync_node, lreg, rreg, state)
+
+                    ^lpid_node when lpid_node != rpid_node ->
+                      debug(
+                        "remote and local view of #{inspect(rname)} conflict, but local is correct, resolving.."
                       )
 
                       resolve_incorrect_remote_reg(sync_node, lreg, rreg, state)
 
-                    lpid_node == rpid_node and lpid < rpid ->
-                      debug(
-                        "remote and local view of #{inspect(rname)} conflict, but remote is more recent, resolving.."
-                      )
+                    _ ->
+                      cond do
+                        lpid_node == rpid_node and lpid > rpid ->
+                          debug(
+                            "remote and local view of #{inspect(rname)} conflict, but local is more recent, resolving.."
+                          )
 
-                      resolve_incorrect_local_reg(sync_node, lreg, rreg, state)
+                          resolve_incorrect_remote_reg(sync_node, lreg, rreg, state)
 
-                    :else ->
-                      # name should be on another node, so neither registration is correct
-                      debug(
-                        "remote and local view of #{inspect(rname)} are both outdated, resolving.."
-                      )
+                        lpid_node == rpid_node and lpid < rpid ->
+                          debug(
+                            "remote and local view of #{inspect(rname)} conflict, but remote is more recent, resolving.."
+                          )
 
-                      resolve_incorrect_local_reg(sync_node, lreg, rreg, state)
+                          resolve_incorrect_local_reg(sync_node, lreg, rreg, state)
+
+                        :else ->
+                          # name should be on another node, so neither registration is correct
+                          debug(
+                            "remote and local view of #{inspect(rname)} are both outdated, resolving.."
+                          )
+
+                          resolve_incorrect_local_reg(sync_node, lreg, rreg, state)
+                      end
                   end
               end
           end
-      end
-    end)
+        end)
+      end)
+
+    info("Syncing took #{us}us")
 
     state
   end
@@ -544,7 +575,8 @@ defmodule Swarm.Tracker do
       ref -> Process.demonitor(ref, [:flush])
     end
 
-    {:next_state, :tracking, %{state | sync_node: nil, sync_ref: nil}, {:state_timeout, anti_entropy_interval(), :anti_entropy}}
+    {:next_state, :tracking, %{state | sync_node: nil, sync_ref: nil},
+     {:state_timeout, anti_entropy_interval(), :anti_entropy}}
   end
 
   defp resolve_pending_sync_requests(
@@ -568,7 +600,13 @@ defmodule Swarm.Tracker do
       Enum.member?(state.nodes, pending_node) ->
         info("clearing pending sync request for #{pending_node}")
         {lclock, rclock} = Clock.fork(state.clock)
-        debug("forking clock when resolving: #{inspect state.clock}, lclock: #{inspect lclock}, rclock: #{inspect rclock}")
+
+        debug(
+          "forking clock when resolving: #{inspect(state.clock)}, lclock: #{inspect(lclock)}, rclock: #{
+            inspect(rclock)
+          }"
+        )
+
         ref = Process.monitor(pid)
         GenStateMachine.cast(pid, {:sync_recv, self(), rclock, get_registry_snapshot()})
 
@@ -1170,29 +1208,36 @@ defmodule Swarm.Tracker do
     GenStateMachine.reply(from, :ok)
     {:keep_state, new_state}
   end
+
   defp handle_call({:handoff, worker_name, handoff_state}, from, state) do
     Registry.get_by_name(worker_name)
     |> case do
       :undefined ->
         # Worker was already removed from registry -> do nothing
-        debug "The node #{worker_name} was not found in the registry"
+        debug("The node #{worker_name} was not found in the registry")
+
       entry(name: name, pid: pid, meta: %{mfa: _mfa} = meta) = obj ->
         case Strategy.remove_node(state.strategy, state.self) |> Strategy.key_to_node(name) do
           {:error, {:invalid_ring, :no_nodes}} ->
-            debug "Cannot handoff #{inspect name} because there is no other node left"
+            debug("Cannot handoff #{inspect(name)} because there is no other node left")
+
           other_node ->
-            debug "#{inspect name} has requested to be terminated and resumed on another node"
+            debug("#{inspect(name)} has requested to be terminated and resumed on another node")
             {:ok, state} = remove_registration(obj, state)
             send(pid, {:swarm, :die})
-            debug "sending handoff for #{inspect name} to #{other_node}"
-            GenStateMachine.cast({__MODULE__, other_node},
-                                 {:handoff, self(), {name, meta, handoff_state, Clock.peek(state.clock)}})
+            debug("sending handoff for #{inspect(name)} to #{other_node}")
+
+            GenStateMachine.cast(
+              {__MODULE__, other_node},
+              {:handoff, self(), {name, meta, handoff_state, Clock.peek(state.clock)}}
+            )
         end
     end
 
     GenStateMachine.reply(from, :finished)
     :keep_state_and_data
   end
+
   defp handle_call(msg, _from, _state) do
     warn("unrecognized call: #{inspect(msg)}")
     :keep_state_and_data
@@ -1209,8 +1254,7 @@ defmodule Swarm.Tracker do
       ref = Process.monitor(from)
       GenStateMachine.cast(from, {:sync_recv, self(), rclock, get_registry_snapshot()})
 
-      {:next_state, :awaiting_sync_ack,
-       %{state | sync_node: sync_node, sync_ref: ref}}
+      {:next_state, :awaiting_sync_ack, %{state | sync_node: sync_node, sync_ref: ref}}
     end
   end
 
@@ -1711,5 +1755,4 @@ defmodule Swarm.Tracker do
   defp anti_entropy_interval() do
     Application.get_env(:swarm, :anti_entropy_interval, @default_anti_entropy_interval)
   end
-
 end
